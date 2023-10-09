@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "<http://mybatis.org/dtd/mybatis-3-mapper.dtd>">
+<!--namespbace 指定mapper接口类-->
+<mapper namespace="dao.baozidao">
+    <!--id指定方法名 相当于实现接口该方法  返回类型,再配置文件当中填写路径-->
+    <select id="add" parameterType="pojo.baozi">
+        INSERT INTO baozi (year,month,day,title,type,time) VALUES (#{baozi.year},#{baozi.month},#{baozi.day},#{baozi.title},#{baozi.type},#{baozi.time});
+    </select>
+
+</mapper>
