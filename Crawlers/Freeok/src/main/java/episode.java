@@ -12,7 +12,10 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import util.tools;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.util.Scanner;
@@ -83,10 +86,20 @@ public class episode {
                 runtime.traceInstructions(true);
                 String path = "D:\\Development Tool\\ffmpeg-master-latest-win64-gpl-shared\\bin\\ffmpeg.exe";
 
-                String cmd = "ffmpeg -i " + s3 + " E:/" + title.replaceAll(" ", "") + ".mp4";
+                String cmd = "ffmpeg -i \"" + s3 + "\" E:/" + title.replaceAll(" ", "") + ".mp4";
                 System.out.println(cmd);
                 try {
-                    runtime.exec(cmd).getInputStream().read();
+                    Process process = runtime.exec(cmd);
+                    InputStream inputStream = process.getInputStream();
+                    BufferedReader br = new BufferedReader(new InputStreamReader(inputStream, "gb2312"));
+                    String line = null;
+                    while ((line = br.readLine()) != null) {
+                        System.out.println(line);
+                    }
+
+                   /* if (exec.waitFor() == 0) {
+                        System.out.println("下载完成");
+                    }*/
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
