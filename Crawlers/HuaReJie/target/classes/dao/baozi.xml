@@ -6,7 +6,8 @@
 <mapper namespace="dao.baozidao">
     <!--id指定方法名 相当于实现接口该方法  返回类型,再配置文件当中填写路径-->
     <select id="add" parameterType="pojo.baozi">
-        INSERT INTO baozi (year,month,day,title,type,time) VALUES (#{baozi.year},#{baozi.month},#{baozi.day},#{baozi.title},#{baozi.type},#{baozi.time});
+        INSERT INTO baozi (year,month,day,title,type,time) VALUES
+        (#{baozi.year},#{baozi.month},#{baozi.day},#{baozi.title},#{baozi.type},#{baozi.time});
     </select>
 
 </mapper>

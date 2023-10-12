@@ -1,7 +1,6 @@
 package tools;
 
 import cn.hutool.core.io.FileUtil;
-import cn.hutool.setting.dialect.Props;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
@@ -15,6 +14,7 @@ import org.apache.hc.client5.http.ssl.NoopHostnameVerifier;
 import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpEntity;
+import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.http.config.Registry;
 import org.apache.hc.core5.http.config.RegistryBuilder;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
@@ -32,7 +32,11 @@ import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -44,10 +48,9 @@ import java.util.regex.Pattern;
 
 public class httpUtils {
     private CloseableHttpClient httpclient;
-    private static PoolingHttpClientConnectionManager pool = null;
     private static HttpClientBuilder httpClientBuilder = null;
-    private List<Header> headers;
-    private static Props props;
+    public volatile AtomicLong downSize = new AtomicLong();
+    public double prevSize;
 
     static {
         try {
@@ -70,11 +73,9 @@ public class httpUtils {
                     .register("http", PlainConnectionSocketFactory.INSTANCE)
                     .build();
             //连接池
-            props = new Props("conifg.properties");
-            pool = new PoolingHttpClientConnectionManager(registry);
-            Integer poolSize = props.getInt("poolSize");
-            pool.setMaxTotal(poolSize);
-            pool.setDefaultMaxPerRoute(poolSize);
+            PoolingHttpClientConnectionManager pool = new PoolingHttpClientConnectionManager(registry);
+            pool.setMaxTotal(32);
+            pool.setDefaultMaxPerRoute(32);
             //连接参数
             RequestConfig requestConfig = RequestConfig.custom()
                     .setResponseTimeout(10, TimeUnit.SECONDS)
@@ -83,141 +84,167 @@ public class httpUtils {
                     .build();
 
             httpClientBuilder = HttpClients.custom();
-            httpClientBuilder
-                    .setConnectionManager(pool);
+            httpClientBuilder.setConnectionManager(pool);
             // .setDefaultRequestConfig(requestConfig);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    public void setReqHeaders(List<Header> headers) {
-        this.headers = headers;
-    }
 
     public httpUtils(List<Header> headers) {
         httpclient = httpClientBuilder.setDefaultHeaders(headers).build();
     }
 
 
-    public void download(String url, String path, String... start_end) {
+    public void download(String url, String path, String start, String end, List<Header>... headers) throws IOException {
         HttpGet httpGet = new HttpGet(url);
-        if (headers != null) {
-            for (Header header : headers) {
-                httpGet.setHeaders(header);
-            }
-        }
-        String[] clone = start_end.clone();
-        if (clone.length == 2) {
-            String x = clone[0];
-            String y = clone[1];
-            if (y.equals("0")) {
-                y = "";
+
+        if (!start.equals(end)) {
+            if (end.equals("0")) {
+                end = "";
             }
             String contentRange =
-                    "bytes=" + x + "-" + y;
+                    "bytes=" + start + "-" + end;
             httpGet.setHeader("Range", contentRange);
         }
-        CloseableHttpResponse response = null;
-        try {
-            response = httpclient.execute(httpGet);
-            InputStream content = response.getEntity().getContent();
-            BufferedInputStream bis = new BufferedInputStream(content);
-            BufferedOutputStream outputStream = FileUtil.getOutputStream(path);
-            byte[] bytes = new byte[1024];
-            int len = -1;
-            while ((len = bis.read(bytes)) != -1) {
-                outputStream.write(bytes, 0, len);
+        List<Header>[] clone = headers.clone();
+        if (clone.length != 0) {
+            for (Header header : clone[0]) {
+                httpGet.setHeader(header);
             }
-            outputStream.close();
-            bis.close();
-            content.close();
-        } catch (Exception e) {
-            e.printStackTrace();
         }
+        CloseableHttpResponse response = httpclient.execute(httpGet);
+        InputStream content = response.getEntity().getContent();
+        BufferedInputStream bis = new BufferedInputStream(content);
+        BufferedOutputStream outputStream = FileUtil.getOutputStream(path);
+        byte[] bytes = new byte[1024];
+        int len = -1;
+        while ((len = bis.read(bytes)) != -1) {
+            downSize.addAndGet(len);
+            outputStream.write(bytes, 0, len);
+        }
+        outputStream.close();
+        bis.close();
+        content.close();
+        response.close();
     }
 
-    public String get(String url) {
-        String html = "";
-        HttpGet httpGet = new HttpGet(url);
-        if (headers != null) {
-            for (Header header : headers) {
-                httpGet.setHeaders(header);
-            }
-        }
-        CloseableHttpResponse response = null;
+    public void poolDownload(String url, int corePoolSize, int maximumPoolSize, int queueSize, String fileLength,
+                             String fileName, String fileType, String tempPath, String fileInputPath,
+                             List<Header>... headers) {
+        ThreadPoolExecutor threadPool = new ThreadPoolExecutor(corePoolSize,
+                maximumPoolSize, 0,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<Runnable>(queueSize),
+                new ThreadPoolExecutor.CallerRunsPolicy());
         try {
-            response = httpclient.execute(httpGet);
-            HttpEntity entity = response.getEntity();
-            //System.out.println(pool.getTotalStats().toString());
-            html = EntityUtils.toString(entity, "utf-8");
+            fileName = updataFileName(fileName);
+            String[] lengths = splitFileLength(new Long(fileLength), maximumPoolSize);
+            CountDownLatch count = new CountDownLatch(maximumPoolSize);
+            for (int i = 0; i < lengths.length; i++) {
+                String[] split = lengths[i].split("-");
+                int finalI = i;
+                String finalFileName = fileName;
+                threadPool.submit(() -> {
+                    try {
+                        if (headers.clone().length != 0) {
+                            this.download(url, tempPath + "\\temp\\" + finalFileName + "_" + (finalI + 1) +
+                                            ".temp",
+                                    split[0],
+                                    split[1],
+                                    headers.clone()[0]);
+                        } else {
+                            this.download(url, tempPath + "\\temp\\" + finalFileName + "_" + (finalI + 1) +
+                                            ".temp",
+                                    split[0],
+                                    split[1]);
+                        }
+                    } catch (IOException e) {
+                        threadPool.shutdown();
+                        e.printStackTrace();
+                    }
+                    count.countDown();
+                });
+            }
+            count.await();
+            fileMerge(fileInputPath, tempPath + "\\temp\\", fileName, fileType,
+                    maximumPoolSize);
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            if (response != null) {
-                try {
-                    response.close();
-                } catch (IOException e) {
-                    e.printStackTrace();
-                }
-            }
+            assert threadPool != null;
+            threadPool.shutdown();
         }
-        return html;
     }
 
-    public Map<String, String> getfileName(String url) {
-        Map<String, String> hashMap = new HashMap<String, String>();
+    public String get(String url, List<Header>... headers) throws IOException, ParseException {
         HttpGet httpGet = new HttpGet(url);
-        if (headers != null) {
-            for (Header header : headers) {
-                httpGet.setHeaders(header);
+        List<Header>[] clone = headers.clone();
+        if (clone.length != 0) {
+            for (Header header : clone[0]) {
+                httpGet.setHeader(header);
             }
         }
         CloseableHttpResponse response = null;
-        try {
-            response = httpclient.execute(httpGet);
-            String Length = response.getHeaders("Content-Length")[0].getValue();
-            String fileName = null;
-            String Type = null;
-            Header[] Content_Disposition = response.getHeaders("Content-Disposition");
-            httpGet.abort();
-            //获取百度云第三方链接
-            if (Content_Disposition.length != 0) {
-                String Name = new String(Content_Disposition[0].getValue().getBytes("ISO-8859-1"), "utf8");
-                Pattern p = Pattern.compile("(?<=\").*?(?=\")");
-                Matcher m = p.matcher(Name);
-                StringBuilder s = new StringBuilder();
-                while (m.find()) {
-                    s.append(m.group());
-                }
-                String[] split = s.toString().split("\\.");
-                fileName = split[0];
-                Type = split[1];
-            } else {
-                //拆链接 取名字
-                String[] split = url.split("/");
-                String name = split[split.length - 1];
-                if (name.contains("?")) {
-                    String[] split1 = name.split("\\?");
-                    String[] split2 = split1[0].split("\\.");
-                    Type = split2[split2.length - 1];
-                    fileName = split1[0].replaceAll("." + Type, "");
-                } else {
-                    String[] split1 = name.split("\\.");
-                    Type = split1[split1.length - 1];
-                    fileName = name.replaceAll("." + Type, "");
-                }
+
+        response = httpclient.execute(httpGet);
+        HttpEntity entity = response.getEntity();
+        String html = EntityUtils.toString(entity, "utf-8");
+        response.close();
+        return html;
+    }
+
+    public Map<String, String> getfileName(String url, List<Header>... headers) throws IOException {
+        Map<String, String> hashMap = new HashMap<String, String>();
+        HttpGet httpGet = new HttpGet(url);
+        List<Header>[] clone = headers.clone();
+        if (clone.length != 0) {
+            for (Header header : clone[0]) {
+                httpGet.setHeader(header);
             }
-            hashMap.put("Name", fileName);
-            hashMap.put("Type", Type);
-            hashMap.put("Length", Length);
-        } catch (Exception e) {
-            e.printStackTrace();
         }
+        CloseableHttpResponse response = httpclient.execute(httpGet);
+        String Length = response.getHeaders("Content-Length")[0].getValue();
+        String fileName = null;
+        String Type = null;
+        Header[] Content_Disposition = response.getHeaders("Content-Disposition");
+        httpGet.abort();
+        //获取百度云第三方链接
+        if (Content_Disposition.length != 0) {
+            String Name = new String(Content_Disposition[0].getValue().getBytes("ISO-8859-1"), "utf8");
+            Pattern p = Pattern.compile("(?<=\").*?(?=\")");
+            Matcher m = p.matcher(Name);
+            StringBuilder s = new StringBuilder();
+            while (m.find()) {
+                s.append(m.group());
+            }
+            String[] split = s.toString().split("\\.");
+            fileName = split[0];
+            Type = split[1];
+        } else {
+            //拆链接 取名字
+            String[] split = url.split("/");
+            String name = split[split.length - 1];
+            if (name.contains("?")) {
+                String[] split1 = name.split("\\?");
+                String[] split2 = split1[0].split("\\.");
+                Type = split2[split2.length - 1];
+                fileName = split1[0].replaceAll("." + Type, "");
+            } else {
+                String[] split1 = name.split("\\.");
+                Type = split1[split1.length - 1];
+                fileName = name.replaceAll("." + Type, "");
+            }
+        }
+        hashMap.put("Name", fileName);
+        hashMap.put("Type", Type);
+        hashMap.put("Length", Length);
+
         return hashMap;
     }
 
-    public String[] splitFileLength(long fileSize, int number) {
+    public static String[] splitFileLength(long fileSize, int number) {
         long l = fileSize / number;
         String[] Strings = new String[number];
         for (int i = 1; i <= number; i++) {
@@ -236,33 +263,30 @@ public class httpUtils {
         return Strings;
     }
 
-    public void fileMerge(String inputPath, String filetempPath, String name, String type, String fileLength,
-                          int fileNumber) {
-        RandomAccessFile write = null;
-        try {
-            byte[] bytes = new byte[1024 * 1024];
-            write = new RandomAccessFile(inputPath + "\\" + name + "." + type, "rw");
-            for (int i = 1; i <= fileNumber; i++) {
-                String filepath = filetempPath + name + "_" + i + ".temp";
-                RandomAccessFile read = new RandomAccessFile(filepath, "r");
-                int len = -1;
-                while ((len = read.read(bytes)) != -1) {
-                    write.write(bytes, 0, len);
-                }
-                read.close();
-                FileUtil.del(filepath);
+    public static void fileMerge(String inputPath, String filetempPath, String name, String type,
+                                 int fileNumber) throws IOException {
+
+        byte[] bytes = new byte[1024 * 1024];
+        RandomAccessFile write = new RandomAccessFile(inputPath + "\\" + name + "." + type, "rw");
+        for (int i = 1; i <= fileNumber; i++) {
+            String filepath = filetempPath + name + "_" + i + ".temp";
+
+            RandomAccessFile read = new RandomAccessFile(filepath, "r");
+            int len = -1;
+            while ((len = read.read(bytes)) != -1) {
+                write.write(bytes, 0, len);
             }
-        } catch (Exception e) {
-            e.printStackTrace();
-        } finally {
-            try {
-                assert write != null;
-                write.close();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+            read.close();
+            FileUtil.del(filepath);
         }
+        write.close();
     }
 
+    public static String updataFileName(String fileName) {
+        String pattern = "/|\\|:|\\*|\\?|\"|<|>|\\|";
+        Pattern p = Pattern.compile(pattern);
+        Matcher m = p.matcher(fileName);
+        return m.replaceAll("").replaceAll(" ", "");
+    }
 
 }

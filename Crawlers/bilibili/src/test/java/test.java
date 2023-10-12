@@ -3,6 +3,7 @@ import org.apache.hc.core5.http.message.BasicHeader;
 import org.junit.Test;
 import tools.httpUtils;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -14,15 +15,18 @@ import java.util.Map;
  */
 
 public class test {
-    @Test
-    public void test() {
-        downloadVideo downloadVideo = new downloadVideo();
-        downloadVideo.VideoPath("BV1XY411J7aG");
+    static String property;
 
+    static {
+        property = System.getProperty("user.dir");
+    }
+
+    public static void main(String[] args) {
+        System.out.println(property);
     }
 
     @Test
-    public void test1() {
+    public void test1() throws IOException {
         String url = "https://dldir1.qq.com/qqfile/qq/PCQQ9.7.17/QQ9.7.17.29225.exe";
         List<Header> headers = new ArrayList<Header>();
         headers.add(new BasicHeader("User-Agent", "netdiskpandown_3.6.0"));
