@@ -49,6 +49,7 @@ import java.util.regex.Pattern;
 public class httpUtils {
     private CloseableHttpClient httpclient;
     private static HttpClientBuilder httpClientBuilder = null;
+    private List<Header> headers;
     public volatile AtomicLong downSize = new AtomicLong();
     public double prevSize;
 
@@ -93,6 +94,7 @@ public class httpUtils {
 
 
     public httpUtils(List<Header> headers) {
+        this.headers = headers;
         httpclient = httpClientBuilder.setDefaultHeaders(headers).build();
     }
 
@@ -133,6 +135,7 @@ public class httpUtils {
     public void poolDownload(String url, int corePoolSize, int maximumPoolSize, int queueSize, String fileLength,
                              String fileName, String fileType, String tempPath, String fileInputPath,
                              List<Header>... headers) {
+        CloseableHttpClient build = httpClientBuilder.setDefaultHeaders(this.headers).build();
         ThreadPoolExecutor threadPool = new ThreadPoolExecutor(corePoolSize,
                 maximumPoolSize, 0,
                 TimeUnit.SECONDS,
@@ -142,27 +145,42 @@ public class httpUtils {
             fileName = updataFileName(fileName);
             String[] lengths = splitFileLength(new Long(fileLength), maximumPoolSize);
             CountDownLatch count = new CountDownLatch(maximumPoolSize);
+            List<Header>[] clone = headers.clone();
             for (int i = 0; i < lengths.length; i++) {
                 String[] split = lengths[i].split("-");
                 int finalI = i;
                 String finalFileName = fileName;
                 threadPool.submit(() -> {
                     try {
-                        if (headers.clone().length != 0) {
-                            this.download(url, tempPath + "\\temp\\" + finalFileName + "_" + (finalI + 1) +
-                                            ".temp",
-                                    split[0],
-                                    split[1],
-                                    headers.clone()[0]);
-                        } else {
-                            this.download(url, tempPath + "\\temp\\" + finalFileName + "_" + (finalI + 1) +
-                                            ".temp",
-                                    split[0],
-                                    split[1]);
+                        HttpGet get = new HttpGet(url);
+                        if (clone.length != 0) {
+                            for (Header header : clone[0]) {
+                                get.setHeaders(header);
+                            }
                         }
-                    } catch (IOException e) {
+                        String contentRange =
+                                "bytes=" + split[0] + "-" + split[1];
+                        get.setHeader("Range", contentRange);
+                        CloseableHttpResponse response = build.execute(get);
+                        InputStream content = response.getEntity().getContent();
+                        BufferedInputStream bis = new BufferedInputStream(content);
+                        BufferedOutputStream outputStream =
+                                FileUtil.getOutputStream(tempPath + "\\temp\\" + finalFileName + "_" + (finalI + 1) +
+                                        ".temp");
+                        byte[] bytes = new byte[1024];
+                        int len = -1;
+                        while ((len = bis.read(bytes)) != -1) {
+                            downSize.addAndGet(len);
+                            outputStream.write(bytes, 0, len);
+                        }
+                        outputStream.close();
+                        bis.close();
+                        content.close();
+                        response.close();
+
+                    } catch (Exception e) {
                         threadPool.shutdown();
-                        e.printStackTrace();
+                        System.out.println(e);
                     }
                     count.countDown();
                 });
@@ -205,13 +223,19 @@ public class httpUtils {
             }
         }
         CloseableHttpResponse response = httpclient.execute(httpGet);
+        httpGet.abort();
+
         String Length = response.getHeaders("Content-Length")[0].getValue();
         String fileName = null;
         String Type = null;
         Header[] Content_Disposition = response.getHeaders("Content-Disposition");
-        httpGet.abort();
-        //获取百度云第三方链接
+        String value = null;
         if (Content_Disposition.length != 0) {
+            value = Content_Disposition[0].getValue();
+        }
+        //获取百度云第三方链接
+        if (value != null && !value.equals("attachment")) {
+            System.out.println(Content_Disposition[0].getValue());
             String Name = new String(Content_Disposition[0].getValue().getBytes("ISO-8859-1"), "utf8");
             Pattern p = Pattern.compile("(?<=\").*?(?=\")");
             Matcher m = p.matcher(Name);

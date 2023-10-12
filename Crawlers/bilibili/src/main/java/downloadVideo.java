@@ -34,12 +34,12 @@ public class downloadVideo {
     private static int poolSize;
 
     static {
-        String property = System.getProperty("user.dir");
+       /* String property = System.getProperty("user.dir");
         Props biliConfig = new Props(property + "\\biliConfig.properties");
-        Props config = new Props(property + "\\conifg.properties");
+        Props config = new Props(property + "\\conifg.properties");*/
 
-        /*Props biliConfig = new Props("biliConfig.properties");
-        Props config = new Props("conifg.properties");*/
+        Props biliConfig = new Props("biliConfig.properties");
+        Props config = new Props("conifg.properties");
 
         cookie = biliConfig.getStr("cookie");
 
@@ -58,14 +58,13 @@ public class downloadVideo {
 
     }
 
-
     //整合
     public void integrate() {
         try {
             JsonNode favoriteNode = objectMapper.readValue(this.gainVideoPath(), JsonNode.class);
-            int number = 1;
             Runtime runtime = Runtime.getRuntime();
             for (JsonNode favoritenode : favoriteNode) {
+                int number = 1;
                 String id = favoritenode.get("id").asText();
                 String bvid = favoritenode.get("bvid").asText();
                 String name = favoritenode.get("name").asText();
