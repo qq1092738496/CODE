@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Scanner;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -32,24 +33,24 @@ public class downloadVideo {
     private static final ObjectMapper objectMapper;
     private static final httpUtils httpUtil;
     private static int poolSize;
+    private static Props Settings;
+    private static List<Header> headers;
 
     static {
-       /* String property = System.getProperty("user.dir");
-        Props biliConfig = new Props(property + "\\biliConfig.properties");
-        Props config = new Props(property + "\\conifg.properties");*/
+        /*String property = System.getProperty("user.dir");
+        Settings = new Props(property + "\\Settings.properties");*/
 
-        Props biliConfig = new Props("biliConfig.properties");
-        Props config = new Props("conifg.properties");
+        Settings = new Props("Settings.properties");
 
-        cookie = biliConfig.getStr("cookie");
+        cookie = Settings.getStr("cookie");
 
 
-        downLoadPath = config.getStr("downLoadPath");
-        tempPath = config.getStr("tempPath");
-        poolSize = config.getInt("poolSize");
+        downLoadPath = Settings.getStr("downLoadPath");
+        tempPath = Settings.getStr("tempPath");
+        poolSize = Settings.getInt("poolSize");
         objectMapper = new ObjectMapper();
 
-        List<Header> headers = new ArrayList<Header>();
+        headers = new ArrayList<Header>();
         headers.add(new BasicHeader("Cookie", cookie));
         headers.add(new BasicHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"));
@@ -60,9 +61,9 @@ public class downloadVideo {
 
     //整合
     public void integrate() {
+        Runtime runtime = Runtime.getRuntime();
         try {
             JsonNode favoriteNode = objectMapper.readValue(this.gainVideoPath(), JsonNode.class);
-            Runtime runtime = Runtime.getRuntime();
             for (JsonNode favoritenode : favoriteNode) {
                 int number = 1;
                 String id = favoritenode.get("id").asText();
@@ -72,7 +73,6 @@ public class downloadVideo {
                 List<List<Map<String, String>>> lists = this.parseVideoPath(bvid);
                 for (List<Map<String, String>> list : lists) {
                     for (Map<String, String> stringStringMap : list) {
-                        List<Header> headers = new ArrayList<Header>();
                         headers.add(new BasicHeader("Referer", stringStringMap.get("referer")));
                         String namez = number + "." + httpUtil.updataFileName(stringStringMap.get("name"));
                         number++;
@@ -88,24 +88,22 @@ public class downloadVideo {
                             String audio = stringStringMap.get("audio");
                             Map<String, String> videomap = httpUtil.getfileName(video, headers);
                             Map<String, String> audiomap = httpUtil.getfileName(audio, headers);
-                            long length = Integer.parseInt(videomap.get("Length")) + Integer.parseInt(audiomap.get(
-                                    "Length"));
-
+                            Double length = new Double(videomap.get("Length")) + new Double(audiomap.get("Length"));
+                            String property = System.getProperty("user.dir") + "\\" + "ffmpeg-master-latest-win64-gpl" +
+                                    "-shared\\bin\\ffmpeg.exe";
                             String videopath = tempPath + "\\" + videomap.get("Name") + "." + videomap.get("Type");
                             String audiopath = tempPath + "\\" + audiomap.get("Name") + "." + audiomap.get("Type");
-                            String dom = "ffmpeg -loglevel quiet -i \"" + videopath + "\"" + " -i \"" + audiopath +
-                                    "\" -codec " +
-                                    "copy \"" + downLoadPath + "\\" + title + "\\" + namez + ".mp4\"";
+                            String dom =
+                                    "ffmpeg -loglevel quiet -i \"" + videopath + "\"" + " -i \"" + audiopath +
+                                            "\" -c:v copy -c:a copy \"" + downLoadPath + "\\" + title + "\\" + namez + ".mp4\"";
                             ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(1);
                             scheduledExecutorService.scheduleAtFixedRate(() -> {
-                                String fdownsize = String.format("%.2f", httpUtil.downSize.doubleValue() / 1024 /
-                                        1024);
+                                String fdownsize = String.format("%.2f", httpUtil.downSize.doubleValue() / 1048576);
                                 double speed = httpUtil.downSize.doubleValue() - httpUtil.prevSize;
-                                String fspeed = String.format("%.2f", speed / 1024 / 1024);
-                                String flength = String.format("%.2f", (double) length / 1024 / 1024);
-                                System.out.print("↓[" + name + "]-[" + namez + "]↓  " + fdownsize + "/" + flength +
-                                        "," + fspeed + "mb" +
-                                        "\r");
+                                String fspeed = String.format("%.2f", speed / 1048576);
+                                String flength = String.format("%.2f", (length / 1048576));
+                                System.out.print("↓ " + fdownsize + "/" + flength + "|" + fspeed + "mb\r");
+                                // System.out.print("[" + name + "]-[" + namez + "]\r");
                                 httpUtil.prevSize = httpUtil.downSize.doubleValue();
                             }, 0, 1, TimeUnit.SECONDS);
                             CountDownLatch count = new CountDownLatch(2);
@@ -125,10 +123,17 @@ public class downloadVideo {
 
                             Process exec = runtime.exec(dom);
                             if (exec.waitFor() == 0) {
-                                System.out.println("[" + name + "]-[" + namez + "]");
-                                scheduledExecutorService.shutdownNow();
                                 FileUtil.del(videopath);
                                 FileUtil.del(audiopath);
+                                scheduledExecutorService.shutdownNow();
+                                httpUtil.downSize.set(0);
+                                httpUtil.prevSize = 0;
+                                System.out.println("[" + name + "]-[" + namez + "]");
+                                // System.out.println("[" + name + "]-[" + namez + "]");
+                            } else {
+
+                                System.out.println("合并失败:[" + name + "]-[" + namez + "]");
+                                scheduledExecutorService.shutdownNow();
                                 httpUtil.downSize.set(0);
                                 httpUtil.prevSize = 0;
                             }
@@ -141,13 +146,21 @@ public class downloadVideo {
         } catch (Exception e) {
             e.printStackTrace();
         }
+
+        runtime.addShutdownHook(new Thread(() -> {
+            File file = new File(tempPath + "\\temp");
+            for (File listFile : file.listFiles()) {
+                if (listFile.toString().endsWith(".temp")) {
+                    listFile.delete();
+                }
+            }
+        }));
     }
 
     //获取收藏夹当内容
     public String gainVideoPath() {
+        String favoriteurl = Settings.getStr("favoriteurl");
 
-        String favoriteurl = "https://api.bilibili.com/x/v3/fav/resource/list?media_id=1489575008&pn=1&ps=20&keyword" +
-                "=&order=mtime&type=0&tid=0&platform=web&jsonp=jsonp";
         String datapath = null;
         try {
             String json = httpUtil.get(favoriteurl);
@@ -243,6 +256,8 @@ public class downloadVideo {
         return mapList;
     }
 
+    boolean b = true;
+
     public List<Map<String, String>> VideoPath(String bvid) {
         List<Header> headers = new ArrayList<Header>();
         headers.add(new BasicHeader("referer", "https://www.bilibili.com/video/" + bvid));
@@ -261,12 +276,27 @@ public class downloadVideo {
                         "&fnval" +
                         "=2000&otype=json";
                 String s = httpUtil.get(url2);
-
                 JsonNode jsonNode1 = objectMapper.readValue(s, JsonNode.class);
                 JsonNode data1 = jsonNode1.get("data");
+                if (b) {
+                    int quality = data1.get("quality").intValue();
+                    if (quality < 80) {
+                        b = false;
+                        int quality2 = data1.get("support_formats").get(0).get("quality").intValue();
+                        if (quality < quality2) {
+                            System.out.println("当前不是最高画质,请更新Cookie,是否继续下载? [y/n]");
+                            Scanner input = new Scanner(System.in);
+                            if (input.nextLine().equals("n")) {
+                                System.exit(0);
+                            }
+                        }
+                    } else {
+                        b = false;
+                    }
+                }
                 JsonNode jsonNode2 = data1.get("dash").get("video").get(0);
                 JsonNode jsonNode3 = data1.get("dash").get("audio").get(0);
-                String s1 = data1.get("dash").get("video").get(0).get("id").asText();
+                // String s1 = data1.get("dash").get("video").get(0).get("id").asText();
                 Map<String, String> map = new HashMap<String, String>();
                 //page
                 map.put("part", data.get(i).get("page").asText());
@@ -285,7 +315,6 @@ public class downloadVideo {
         }
         return mapList;
     }
-
 
 
 }

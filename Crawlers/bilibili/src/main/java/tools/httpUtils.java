@@ -24,6 +24,7 @@ import org.apache.hc.core5.ssl.TrustStrategy;
 import javax.net.ssl.SSLContext;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
@@ -98,10 +99,12 @@ public class httpUtils {
         httpclient = httpClientBuilder.setDefaultHeaders(headers).build();
     }
 
+    int h = 0;
 
-    public void download(String url, String path, String start, String end, List<Header>... headers) throws IOException {
+    private boolean download(CloseableHttpClient Client, String url, String path, String start, String end,
+                             AtomicLong downSize3, List<Header>... headers) {
         HttpGet httpGet = new HttpGet(url);
-
+        long downsize2 = 0;
         if (!start.equals(end)) {
             if (end.equals("0")) {
                 end = "";
@@ -116,31 +119,64 @@ public class httpUtils {
                 httpGet.setHeader(header);
             }
         }
-        CloseableHttpResponse response = httpclient.execute(httpGet);
-        InputStream content = response.getEntity().getContent();
-        BufferedInputStream bis = new BufferedInputStream(content);
-        BufferedOutputStream outputStream = FileUtil.getOutputStream(path);
-        byte[] bytes = new byte[1024];
-        int len = -1;
-        while ((len = bis.read(bytes)) != -1) {
-            downSize.addAndGet(len);
-            outputStream.write(bytes, 0, len);
+        CloseableHttpResponse response = null;
+        InputStream content = null;
+        BufferedInputStream bis = null;
+        BufferedOutputStream outputStream = null;
+        try {
+            response = Client.execute(httpGet);
+            content = response.getEntity().getContent();
+            bis = new BufferedInputStream(content);
+            outputStream = FileUtil.getOutputStream(path);
+            byte[] bytes = new byte[1024];
+            int len = -1;
+            while ((len = bis.read(bytes)) != -1) {
+                downsize2 += len;
+                downSize3.addAndGet(len);
+                downSize.addAndGet(len);
+                outputStream.write(bytes, 0, len);
+            }
+        } catch (IOException e) {
+            h++;
+            if (h <= 5) {
+                System.out.println(e + "|回调次数:" + h);
+
+                downSize.set(downSize.longValue() - downsize2);
+                return download(Client, url, path, start, end,
+                        downSize3, headers);
+            }
+        } finally {
+            try {
+                if (outputStream != null) {
+                    outputStream.close();
+                }
+                if (bis != null) {
+                    bis.close();
+                }
+                if (content != null) {
+                    content.close();
+                }
+                if (response != null) {
+                    response.close();
+                }
+            } catch (IOException e) {
+
+            }
+
         }
-        outputStream.close();
-        bis.close();
-        content.close();
-        response.close();
+        return true;
     }
 
-    public void poolDownload(String url, int corePoolSize, int maximumPoolSize, int queueSize, String fileLength,
-                             String fileName, String fileType, String tempPath, String fileInputPath,
-                             List<Header>... headers) {
+    public boolean poolDownload(String url, int corePoolSize, int maximumPoolSize, int queueSize, String fileLength,
+                                String fileName, String fileType, String tempPath, String fileInputPath,
+                                List<Header>... headers) {
         CloseableHttpClient build = httpClientBuilder.setDefaultHeaders(this.headers).build();
         ThreadPoolExecutor threadPool = new ThreadPoolExecutor(corePoolSize,
                 maximumPoolSize, 0,
                 TimeUnit.SECONDS,
                 new LinkedBlockingQueue<Runnable>(queueSize),
                 new ThreadPoolExecutor.CallerRunsPolicy());
+        AtomicLong downSize3 = new AtomicLong();
         try {
             fileName = updataFileName(fileName);
             String[] lengths = splitFileLength(new Long(fileLength), maximumPoolSize);
@@ -151,49 +187,32 @@ public class httpUtils {
                 int finalI = i;
                 String finalFileName = fileName;
                 threadPool.submit(() -> {
-                    try {
-                        HttpGet get = new HttpGet(url);
-                        if (clone.length != 0) {
-                            for (Header header : clone[0]) {
-                                get.setHeaders(header);
-                            }
-                        }
-                        String contentRange =
-                                "bytes=" + split[0] + "-" + split[1];
-                        get.setHeader("Range", contentRange);
-                        CloseableHttpResponse response = build.execute(get);
-                        InputStream content = response.getEntity().getContent();
-                        BufferedInputStream bis = new BufferedInputStream(content);
-                        BufferedOutputStream outputStream =
-                                FileUtil.getOutputStream(tempPath + "\\temp\\" + finalFileName + "_" + (finalI + 1) +
-                                        ".temp");
-                        byte[] bytes = new byte[1024];
-                        int len = -1;
-                        while ((len = bis.read(bytes)) != -1) {
-                            downSize.addAndGet(len);
-                            outputStream.write(bytes, 0, len);
-                        }
-                        outputStream.close();
-                        bis.close();
-                        content.close();
-                        response.close();
+                    String s = split[1].equals("0") ? "" : split[1];
 
-                    } catch (Exception e) {
-                        threadPool.shutdown();
-                        System.out.println(e);
-                    }
+                    String path = tempPath + "\\temp\\" + finalFileName + "_" + (finalI + 1) +
+                            ".temp";
+                    this.download(build, url, path, split[0], s, downSize3, clone);
                     count.countDown();
                 });
             }
             count.await();
             fileMerge(fileInputPath, tempPath + "\\temp\\", fileName, fileType,
                     maximumPoolSize);
+            File file = new File(fileInputPath + "\\" + fileName + "." + fileType);
+            Long aLong = new Long(fileLength);
+            if (file.length() != aLong) {
+                downSize.set(downSize.longValue() - downSize3.longValue());
+
+                return poolDownload(url, corePoolSize, maximumPoolSize, queueSize, fileLength,
+                        fileName, fileType, tempPath, fileInputPath,
+                        headers);
+            }
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
-            assert threadPool != null;
             threadPool.shutdown();
         }
+        return true;
     }
 
     public String get(String url, List<Header>... headers) throws IOException, ParseException {
@@ -224,7 +243,6 @@ public class httpUtils {
         }
         CloseableHttpResponse response = httpclient.execute(httpGet);
         httpGet.abort();
-
         String Length = response.getHeaders("Content-Length")[0].getValue();
         String fileName = null;
         String Type = null;
@@ -235,7 +253,6 @@ public class httpUtils {
         }
         //获取百度云第三方链接
         if (value != null && !value.equals("attachment")) {
-            System.out.println(Content_Disposition[0].getValue());
             String Name = new String(Content_Disposition[0].getValue().getBytes("ISO-8859-1"), "utf8");
             Pattern p = Pattern.compile("(?<=\").*?(?=\")");
             Matcher m = p.matcher(Name);
@@ -282,6 +299,7 @@ public class httpUtils {
             if (x != 0) {
                 x++;
             }
+
             Strings[i - 1] = x + "-" + y;
         }
         return Strings;
