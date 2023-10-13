@@ -119,15 +119,8 @@ public class httpUtils {
                 httpGet.setHeader(header);
             }
         }
-        CloseableHttpResponse response = null;
-        InputStream content = null;
-        BufferedInputStream bis = null;
-        BufferedOutputStream outputStream = null;
-        try {
-            response = Client.execute(httpGet);
-            content = response.getEntity().getContent();
-            bis = new BufferedInputStream(content);
-            outputStream = FileUtil.getOutputStream(path);
+        try (CloseableHttpResponse response = Client.execute(httpGet); InputStream content =
+                response.getEntity().getContent(); BufferedInputStream bis = new BufferedInputStream(content); BufferedOutputStream outputStream = FileUtil.getOutputStream(path)) {
             byte[] bytes = new byte[1024];
             int len = -1;
             while ((len = bis.read(bytes)) != -1) {
@@ -136,6 +129,7 @@ public class httpUtils {
                 downSize.addAndGet(len);
                 outputStream.write(bytes, 0, len);
             }
+            h = 0;
         } catch (IOException e) {
             h++;
             if (h <= 5) {
@@ -145,24 +139,6 @@ public class httpUtils {
                 return download(Client, url, path, start, end,
                         downSize3, headers);
             }
-        } finally {
-            try {
-                if (outputStream != null) {
-                    outputStream.close();
-                }
-                if (bis != null) {
-                    bis.close();
-                }
-                if (content != null) {
-                    content.close();
-                }
-                if (response != null) {
-                    response.close();
-                }
-            } catch (IOException e) {
-
-            }
-
         }
         return true;
     }
