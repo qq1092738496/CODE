@@ -7,6 +7,7 @@ import org.apache.hc.core5.http.message.BasicHeader;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.select.Elements;
+import tools.ThreadDown;
 import tools.httpUtils;
 
 import java.io.File;
@@ -30,20 +31,22 @@ public class downloadVideo {
     private static String cookie;
     private static String downLoadPath;
     private static String tempPath;
-    private static final ObjectMapper objectMapper;
-    private static final httpUtils httpUtil;
+    private static ObjectMapper objectMapper;
+    private static httpUtils httpUtil;
+    private static ThreadDown threadDown;
     private static int poolSize;
     private static Props Settings;
     private static List<Header> headers;
+    private static String User_Agent;
 
     static {
-        /*String property = System.getProperty("user.dir");
-        Settings = new Props(property + "\\Settings.properties");*/
+        String property = System.getProperty("user.dir");
+        Settings = new Props(property + "\\Settings.properties");
 
-        Settings = new Props("Settings.properties");
+        /*Settings = new Props("Settings.properties");*/
 
         cookie = Settings.getStr("cookie");
-
+        User_Agent = Settings.getStr("User_Agent");
 
         downLoadPath = Settings.getStr("downLoadPath");
         tempPath = Settings.getStr("tempPath");
@@ -52,10 +55,13 @@ public class downloadVideo {
 
         headers = new ArrayList<Header>();
         headers.add(new BasicHeader("Cookie", cookie));
-        headers.add(new BasicHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                "(KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"));
-
+        headers.add(new BasicHeader("User-Agent", User_Agent));
+        headers.add(new BasicHeader("referer", "https://api.bilibili.com/"));
+        headers.add(new BasicHeader("Accept-Encoding", "gzip, deflate, br"));
+        headers.add(new BasicHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif," +
+                "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"));
         httpUtil = new httpUtils(headers);
+        threadDown = new ThreadDown();
 
     }
 
@@ -73,7 +79,7 @@ public class downloadVideo {
                 List<List<Map<String, String>>> lists = this.parseVideoPath(bvid);
                 for (List<Map<String, String>> list : lists) {
                     for (Map<String, String> stringStringMap : list) {
-                        headers.add(new BasicHeader("Referer", stringStringMap.get("referer")));
+                        //headers.add(new BasicHeader("Referer", stringStringMap.get("referer")));
                         String namez = number + "." + httpUtil.updataFileName(stringStringMap.get("name"));
                         number++;
                         String pathfile = downLoadPath + "\\" + title;
@@ -94,28 +100,39 @@ public class downloadVideo {
                             String videopath = tempPath + "\\" + videomap.get("Name") + "." + videomap.get("Type");
                             String audiopath = tempPath + "\\" + audiomap.get("Name") + "." + audiomap.get("Type");
                             String dom =
-                                    "ffmpeg -loglevel quiet -i \"" + videopath + "\"" + " -i \"" + audiopath +
+                                    property + " -loglevel quiet -i \"" + videopath + "\"" + " -i \"" + audiopath +
                                             "\" -c:v copy -c:a copy \"" + downLoadPath + "\\" + title + "\\" + namez + ".mp4\"";
+                            System.out.println("[" + name + "]-[" + namez + "]");
                             ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(1);
                             scheduledExecutorService.scheduleAtFixedRate(() -> {
-                                String fdownsize = String.format("%.2f", httpUtil.downSize.doubleValue() / 1048576);
-                                double speed = httpUtil.downSize.doubleValue() - httpUtil.prevSize;
+
+                                String fdownsize = String.format("%.2f", threadDown.downSize.doubleValue() / 1048576);
+                                double speed = threadDown.downSize.doubleValue() - threadDown.prevSize;
+                                double remainSize = length - threadDown.downSize.doubleValue();
+
                                 String fspeed = String.format("%.2f", speed / 1048576);
                                 String flength = String.format("%.2f", (length / 1048576));
-                                System.out.print("↓ " + fdownsize + "/" + flength + "|" + fspeed + "mb\r");
+                                String fremainSize = String.format("%.1f", remainSize / speed / 60);
+                               /* if ("Infinity".equalsIgnoreCase(fremainSize)) {
+                                    fremainSize = "-";
+                                }*/
+                                System.out.print("↓ " + fdownsize + "/" + flength + "|" + fspeed + "mb/" + fremainSize
+                                        + "m\r");
                                 // System.out.print("[" + name + "]-[" + namez + "]\r");
-                                httpUtil.prevSize = httpUtil.downSize.doubleValue();
+                                threadDown.prevSize = threadDown.downSize.doubleValue();
                             }, 0, 1, TimeUnit.SECONDS);
                             CountDownLatch count = new CountDownLatch(2);
                             new Thread(() -> {
-                                httpUtil.poolDownload(video, 1, poolSize, 5, videomap.get("Length"), videomap.get(
+                                threadDown.poolDownload(video, poolSize, poolSize, 5, videomap.get("Length"),
+                                        videomap.get(
                                         "Name"),
                                         videomap.get("Type"), tempPath, downLoadPath, headers);
                                 count.countDown();
                             }).start();
                             new Thread(() -> {
-                                httpUtil.poolDownload(audio, 1, poolSize / 2, 5, audiomap.get("Length"), audiomap.get(
-                                        "Name"),
+                                threadDown.poolDownload(audio, poolSize / 2, poolSize / 2, 5, audiomap.get("Length"),
+                                        audiomap.get(
+                                                "Name"),
                                         audiomap.get("Type"), tempPath, downLoadPath, headers);
                                 count.countDown();
                             }).start();
@@ -126,16 +143,15 @@ public class downloadVideo {
                                 FileUtil.del(videopath);
                                 FileUtil.del(audiopath);
                                 scheduledExecutorService.shutdownNow();
-                                httpUtil.downSize.set(0);
-                                httpUtil.prevSize = 0;
-                                System.out.println("[" + name + "]-[" + namez + "]");
+                                threadDown.downSize.set(0);
+                                threadDown.prevSize = 0;
+                                //   System.out.println("[" + name + "]-[" + namez + "]");
                                 // System.out.println("[" + name + "]-[" + namez + "]");
                             } else {
-
-                                System.out.println("合并失败:[" + name + "]-[" + namez + "]");
                                 scheduledExecutorService.shutdownNow();
-                                httpUtil.downSize.set(0);
-                                httpUtil.prevSize = 0;
+                                threadDown.downSize.set(0);
+                                threadDown.prevSize = 0;
+                                System.out.println("合并失败:[" + name + "]-[" + namez + "]");
                             }
                         } else {
                             System.out.println("[" + name + "]-[" + namez + "]");
@@ -159,10 +175,22 @@ public class downloadVideo {
 
     //获取收藏夹当内容
     public String gainVideoPath() {
-        String favoriteurl = Settings.getStr("favoriteurl");
-
+        String up_mid = Settings.getStr("up_mid");
+        String fid = "";
         String datapath = null;
         try {
+            String s = httpUtil.get("https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=" + up_mid);
+            JsonNode jsonNode1 = objectMapper.readValue(s, JsonNode.class).get("data").get("list");
+            for (JsonNode jsonNode : jsonNode1) {
+                if (jsonNode.get("title").asText().equals("下载")) {
+                    fid = jsonNode.get("id").asText();
+                }
+            }
+            String favoriteurl = "https://api.bilibili.com/x/v3/fav/resource/list?media_id=" + fid + "&pn=1&ps=20" +
+                    "&keyword" +
+                    "=&order" +
+                    "=mtime" +
+                    "&type=0&tid=0&platform=web";
             String json = httpUtil.get(favoriteurl);
             JsonNode jsonNode = objectMapper.readValue(json, JsonNode.class);
             JsonNode data = jsonNode.get("data").get("medias");
@@ -259,8 +287,7 @@ public class downloadVideo {
     boolean b = true;
 
     public List<Map<String, String>> VideoPath(String bvid) {
-        List<Header> headers = new ArrayList<Header>();
-        headers.add(new BasicHeader("referer", "https://www.bilibili.com/video/" + bvid));
+
         //httpUtils.setReqHeaders(headers);
         String url1 = "https://api.bilibili.com/x/player/pagelist?bvid=" + bvid + "&jsonp=jsonp";
         List<Map<String, String>> mapList = new ArrayList<Map<String, String>>();
@@ -307,7 +334,7 @@ public class downloadVideo {
                 //音频
                 map.put("audio", jsonNode3.get("base_url").asText());
                 //来源
-                map.put("referer", url1);
+                //  map.put("referer", url1);
                 mapList.add(map);
             }
         } catch (Exception e) {
